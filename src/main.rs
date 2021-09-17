@@ -3,7 +3,7 @@ use reqwest::Url;
 use std::{
     env, fs,
     io::{self, Cursor},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use structopt::StructOpt;
 use tokio::process::Command;
@@ -15,8 +15,12 @@ struct Opt {
     py_version: Option<String>,
 
     /// Output directory
-    #[structopt(parse(from_os_str))]
+    #[structopt(parse(from_os_str), default_value = "pydist")]
     output_dir: PathBuf,
+
+    /// Pip requirements file
+    #[structopt(short, long, parse(from_os_str))]
+    requirements: Option<PathBuf>,
 }
 
 const GET_PIP_URL: &str = "https://bootstrap.pypa.io/get-pip.py";
@@ -26,26 +30,69 @@ type PyVerTuple = (u16, u16, u16);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
-    let dist_dir = opt.output_dir.join("pydist");
     let py_version = match opt.py_version {
-        Some(ver) => python_version(&ver)?,
+        Some(ver) => python_version_from_str(&ver)?,
         None => default_python_version().await?,
     };
 
+    let pip_path = opt.output_dir.join("Scripts").join("pip.exe");
+
+    if !pip_path.is_file() {
+        create_embedded_env(&py_version, &opt.output_dir).await?;
+    } else {
+        eprintln!("Using existing env: {:?}", opt.output_dir);
+    }
+
+    if let Some(reqs_path) = opt.requirements {
+        install_requirements(&pip_path, &opt.output_dir, &reqs_path).await?;
+    }
+
+    eprintln!("Done!");
+    Ok(())
+}
+
+async fn install_requirements(
+    pip_path: &Path,
+    dist_dir: &Path,
+    reqs_path: &Path,
+) -> anyhow::Result<()> {
+    eprintln!("Installing pip requirements...");
+
+    let path_var = dist_env_path(dist_dir);
+
+    let out = Command::new(pip_path.to_string_lossy().as_ref())
+        .env("PATH", &path_var)
+        .arg("install")
+        .arg("-r")
+        .arg(reqs_path.to_string_lossy().as_ref())
+        .output()
+        .await?;
+
+    eprintln!("pip stdout: {}", String::from_utf8_lossy(&out.stdout));
+    eprintln!("pip stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    if !out.status.success() {
+        bail!("pip failed");
+    }
+
+    Ok(())
+}
+
+async fn create_embedded_env(py_version: &PyVerTuple, dist_dir: &Path) -> anyhow::Result<()> {
     let libs_dir_src = host_python_dir(&py_version)?;
-    let get_pip_path = opt.output_dir.join("get-pip.py");
+    let get_pip_path = dist_dir.join("get-pip.py");
 
     fs::create_dir_all(&dist_dir)?;
 
     // Download embedded zip file
     eprintln!("Downloading zip file...");
     {
-        let py_zip = reqwest::get(python_embed_zip_url(&py_version)?)
+        let py_zip = reqwest::get(python_embed_zip_url(py_version)?)
             .await?
             .bytes()
             .await?;
 
-        zip::ZipArchive::new(Cursor::new(py_zip))?.extract(&dist_dir)?;
+        zip::ZipArchive::new(Cursor::new(py_zip))?.extract(dist_dir)?;
     }
 
     // Copy libs
@@ -83,12 +130,13 @@ async fn main() -> anyhow::Result<()> {
     // Install pip
     eprintln!("Installing pip...");
     {
-        let path_var = format!("{0}:{0}/Scripts", dist_dir.to_string_lossy());
+        let path_var = dist_env_path(dist_dir);
         let python_bin = dist_dir.join("python");
 
         let out = Command::new(python_bin.to_string_lossy().as_ref())
             .env("PATH", &path_var)
             .arg(get_pip_path.to_string_lossy().as_ref())
+            .arg("--no-warn-script-location")
             .output()
             .await?;
 
@@ -98,24 +146,37 @@ async fn main() -> anyhow::Result<()> {
         if !out.status.success() {
             bail!("get-pip failed");
         }
+
+        // fs::remove_file(&get_pip_path)?;
     }
 
-    eprintln!("Done!");
     Ok(())
+}
+
+fn dist_env_path(dist_dir: &Path) -> String {
+    let scripts_dir = dist_dir.join("Scripts");
+    format!(
+        "{}:{}",
+        dist_dir.to_string_lossy(),
+        scripts_dir.to_string_lossy()
+    )
 }
 
 async fn default_python_version() -> anyhow::Result<PyVerTuple> {
     let out = Command::new("python")
-        .args(&["-c", "import sys; print(sys.version_info[:2])"])
+        .args(&[
+            "-c",
+            "import sys; print('.'.join(str(x) for x in sys.version_info[:3]))",
+        ])
         .output()
         .await?;
 
-    println!("{}", String::from_utf8_lossy(&out.stdout));
+    let ver_str = String::from_utf8_lossy(&out.stdout);
 
-    todo!()
+    python_version_from_str(&ver_str)
 }
 
-fn python_version(s: &str) -> anyhow::Result<PyVerTuple> {
+fn python_version_from_str(s: &str) -> anyhow::Result<PyVerTuple> {
     let tuple = match s
         .trim()
         .split('.')
@@ -123,7 +184,7 @@ fn python_version(s: &str) -> anyhow::Result<PyVerTuple> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        &[major, minor, bugfix] => (major.parse()?, minor.parse()?, bugfix.parse()?),
+        &[major, minor, micro] => (major.parse()?, minor.parse()?, micro.parse()?),
         _ => bail!("Version must be of the format: 1.2.3"),
     };
 
