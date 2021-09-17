@@ -7,10 +7,19 @@ Because sometimes [virtualenvs just don't work right](https://gist.github.com/kr
 
 ## Usage
 
-This will download the Embedded Python zip file for the current 
+This will download the Embedded Python zip file for the current
 version of python in your PATH, unzip it into "myenv/", then install
 all pip packages in requirements.txt.
 
 ```
 cargo run -- myenv -r requirements.txt
 ```
+
+## Troubleshooting
+
+Pip gives an error after moving the environment folder.
+
+Solutions:
+
+* Use `python -m pip` instead to bypass the path check, or...
+* Run `python get-pip.py` again to reset its path
