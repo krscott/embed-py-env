@@ -1,0 +1,14 @@
+[package]
+name = "embed-py-env"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+structopt = "0.3"
+anyhow = "1.0"
+zip = "0.5"
+reqwest = { version = "0.11" }
+tokio = { version = "1", features = ["full"] }
+fs_extra = "1.2"
