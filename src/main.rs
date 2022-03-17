@@ -63,6 +63,7 @@ async fn install_requirements(
     let out = Command::new(pip_path.to_string_lossy().as_ref())
         .env("PATH", &path_var)
         .arg("install")
+        .arg("--no-warn-script-location")
         .arg("-r")
         .arg(reqs_path.to_string_lossy().as_ref())
         .output()
